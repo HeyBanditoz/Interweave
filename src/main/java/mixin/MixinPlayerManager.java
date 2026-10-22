@@ -1,10 +1,12 @@
 package mixin;
 
+import java.util.List;
 import main.Interweave;
-import net.minecraft.network.ClientConnection;
-import net.minecraft.server.PlayerManager;
-import net.minecraft.server.network.ConnectedClientData;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.network.Connection;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.network.CommonListenerCookie;
+import net.minecraft.server.players.PlayerList;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -12,22 +14,20 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.List;
-
-@Mixin(PlayerManager.class)
+@Mixin(PlayerList.class)
 public class MixinPlayerManager {
-    @Shadow @Final private List<ServerPlayerEntity> players;
+    @Shadow @Final private List<ServerPlayer> players;
 
-    @Shadow @Final protected int maxPlayers;
+    @Shadow @Final private MinecraftServer server;
 
-    @Inject(at = @At("RETURN"), method = "onPlayerConnect")
-    public void onPlayerConnect(ClientConnection connection, ServerPlayerEntity player, ConnectedClientData ccd, CallbackInfo ci) {
-        Interweave.setPlayers(players.size(), maxPlayers);
+    @Inject(at = @At("RETURN"), method = "placeNewPlayer")
+    public void placeNewPlayer(Connection connection, ServerPlayer player, CommonListenerCookie cookie, CallbackInfo ci) {
+        Interweave.setPlayers(players.size(), server.getMaxPlayers());
     }
 
     @Inject(at = @At("RETURN"), method = "remove")
-    public void remove(ServerPlayerEntity player, CallbackInfo ci) {
-        Interweave.setPlayers(players.size(), maxPlayers);
+    public void remove(ServerPlayer player, CallbackInfo ci) {
+        Interweave.setPlayers(players.size(), server.getMaxPlayers());
     }
 
 //    @Inject(at = @At("RETURN"), method = "broadcast(Lnet/minecraft/text/Text;Ljava/util/function/Function;Lnet/minecraft/util/registry/RegistryKey;)V")

@@ -1,12 +1,11 @@
 plugins {
-	id 'fabric-loom' version '1.9-SNAPSHOT'
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 	id 'maven-publish'
 }
 
-sourceCompatibility = JavaVersion.VERSION_17
-targetCompatibility = JavaVersion.VERSION_17
-
-archivesBaseName = project.archives_base_name
+base {
+	archivesName = project.archives_base_name
+}
 version = project.mod_version
 group = project.maven_group
 
@@ -17,42 +16,40 @@ repositories {
 		name = 'Fabric'
 		url = 'https://maven.fabricmc.net/'
 	}
-
-	maven {
-		name 'm2-dv8tion'
-		url 'https://m2.dv8tion.net/releases'
-	}
 }
 
 dependencies {
 	//to change the versions see the gradle.properties file
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
-
-	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
-	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
+	// opus-java and tink are only needed for voice
 	include("net.dv8tion:JDA:${project.jda_version}") {
 		exclude module: 'opus-java'
+		exclude module: 'tink'
 	}
-	modImplementation("net.dv8tion:JDA:${project.jda_version}") {
+	implementation("net.dv8tion:JDA:${project.jda_version}") {
 		exclude module: 'opus-java'
+		exclude module: 'tink'
 	}
 
-	include "com.fasterxml.jackson.core:jackson-databind:2.10.1"
-	include "com.fasterxml.jackson.core:jackson-annotations:2.10.1"
-	include "com.fasterxml.jackson.core:jackson-core:2.10.1"
-	modImplementation "com.fasterxml.jackson.core:jackson-databind:2.10.1"
-	modImplementation "com.fasterxml.jackson.core:jackson-annotations:2.10.1"
-	modImplementation "com.fasterxml.jackson.core:jackson-core:2.10.1"
+	include "com.fasterxml.jackson.core:jackson-databind:2.22.2"
+	include "com.fasterxml.jackson.core:jackson-annotations:2.22"
+	include "com.fasterxml.jackson.core:jackson-core:2.22.2"
+	implementation "com.fasterxml.jackson.core:jackson-databind:2.22.2"
+	implementation "com.fasterxml.jackson.core:jackson-annotations:2.22"
+	implementation "com.fasterxml.jackson.core:jackson-core:2.22.2"
 
-	include group: 'org.apache.commons', name: 'commons-collections4', version: '4.4'
-	include "com.squareup.okio:okio:1.13.0"
+	// JDA's transitive dependencies, which include does not pull in on its own
+	include "org.apache.commons:commons-collections4:4.6.0"
 	include "com.neovisionaries:nv-websocket-client:2.14"
-	include "com.squareup.okhttp3:okhttp:3.13.0"
-	include "net.sf.trove4j:trove4j:3.0.3"
+	include "com.squareup.okhttp3:okhttp-jvm:5.5.0"
+	include "com.squareup.okio:okio-jvm:3.18.1"
+	include "org.jetbrains.kotlin:kotlin-stdlib:2.2.21"
+	include "net.sf.trove4j:core:3.1.0"
 }
 
 processResources {
@@ -70,8 +67,8 @@ tasks.withType(JavaCompile).configureEach {
 	// If Javadoc is generated, this must be specified in that task too.
 	it.options.encoding = "UTF-8"
 
-	// Versions after Minecraft 1.17 upwards uses Java 17.
-	it.options.release = 17
+	// Minecraft 26.1 and above uses Java 25.
+	it.options.release = 25
 }
 
 java {
@@ -79,25 +76,23 @@ java {
 	// if it is present.
 	// If you remove this line, sources will not be generated.
 	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
 }
 
 jar {
 	from("LICENSE") {
-		rename { "${it}_${project.archivesBaseName}"}
+		def archivesName = base.archivesName.get()
+		rename { "${it}_${archivesName}"}
 	}
 }
 
 // configure the maven publication
 publishing {
 	publications {
-		mavenJava(MavenPublication) {
-			// add all the jars that should be included when publishing to maven
-			artifact(remapJar) {
-				builtBy remapJar
-			}
-			artifact(sourcesJar) {
-				builtBy remapSourcesJar
-			}
+		create("mavenJava", MavenPublication) {
+			from components.java
 		}
 	}
 

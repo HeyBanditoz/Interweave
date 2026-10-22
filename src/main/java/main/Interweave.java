@@ -1,33 +1,28 @@
 package main;
 
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
-import net.dv8tion.jda.api.entities.Activity;
-import net.dv8tion.jda.api.entities.Guild;
-import net.dv8tion.jda.api.entities.User;
+import net.dv8tion.jda.api.entities.*;
 import net.dv8tion.jda.api.requests.GatewayIntent;
+import net.dv8tion.jda.api.utils.messages.MessageRequest;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
-import net.minecraft.network.message.MessageType;
+import net.minecraft.network.chat.ChatType;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.contents.PlainTextContents;
+import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.text.PlainTextContent;
-import net.minecraft.text.TextContent;
-import net.minecraft.text.TranslatableTextContent;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import utils.DiscordListener;
 import utils.Settings;
 import utils.SettingsManager;
-
-import javax.security.auth.login.LoginException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Optional;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public class Interweave implements DedicatedServerModInitializer {
 
@@ -36,7 +31,8 @@ public class Interweave implements DedicatedServerModInitializer {
 
 	private static JDA jda;
 
-	private static HashMap<String, String> mentionables;
+	// Discord user ID -> names they can be pinged by, username first
+	private static final Map<String, List<String>> mentionables = new ConcurrentHashMap<>();
 
 	private static String lastMessage;
 
@@ -60,7 +56,7 @@ public class Interweave implements DedicatedServerModInitializer {
 		// Setup server startup callback
 		ServerLifecycleEvents.SERVER_STARTED.register((MinecraftServer server) -> {
 	        sendStartMessage();
-	        setPlayers(0, server.getMaxPlayerCount());
+	        setPlayers(0, server.getMaxPlayers());
 		});
 
 		// Setup server end callback
@@ -71,7 +67,7 @@ public class Interweave implements DedicatedServerModInitializer {
 		});
 	}
 
-	private void initJDA(Settings settings) throws LoginException, InterruptedException {
+	private void initJDA(Settings settings) throws InterruptedException {
 		if (settings.getDiscordToken() == null || settings.getDiscordToken().equals("Bot token here...")) {
 			log(Level.ERROR,
 					"The Discord token is not configured correctly! The bot will not run. Please check your InterweaveConfig.json file.");
@@ -83,20 +79,23 @@ public class Interweave implements DedicatedServerModInitializer {
 			return;
 		}
 
-		jda = JDABuilder.createLight(settings.getDiscordToken()).enableIntents(GatewayIntent.GUILD_MEMBERS).build();
+		// Only ping individual users, never @everyone, @here or roles
+		MessageRequest.setDefaultMentions(EnumSet.of(Message.MentionType.USER));
+
+		jda = JDABuilder.createLight(settings.getDiscordToken()).enableIntents(GatewayIntent.GUILD_MEMBERS, GatewayIntent.MESSAGE_CONTENT).build();
 
 		jda.addEventListener(new DiscordListener());
 
 		jda.awaitReady();
-		mentionables = buildDiscordMentionables();
+		loadDiscordMentionables();
 	}
 
 	//
-	public static void sendMessage(TranslatableTextContent msg) {
+	public static void sendMessage(TranslatableContents msg) {
 		ES.execute(() -> {
 			// %message% message
 			// %sender% sender
-			String key = ((TranslatableTextContent) msg).getKey();
+			String key = ((TranslatableContents) msg).getKey();
 			StringBuilder messageBuilder = new StringBuilder();
 			msg.visit((section) -> {
 				messageBuilder.append(section);
@@ -116,7 +115,7 @@ public class Interweave implements DedicatedServerModInitializer {
 				if (settings.getAdvancementFormat() == null) {
 					return;
 				}
-				message = settings.getAnnouncementFormat().replace("%message%", message).replace("[", "")
+				message = settings.getAdvancementFormat().replace("%message%", message).replace("[", "")
 						.replace("]", "").replace("(", "").replace(")", "");
 			}
 			// Player Joined
@@ -153,8 +152,8 @@ public class Interweave implements DedicatedServerModInitializer {
 					return;
 				}
 				message = settings.getEmoteFormat()
-						.replace("%sender%", ((TextContent) ((TranslatableTextContent) msg).getArgs()[0]).toString())
-						.replace("%message%", ((TranslatableTextContent) msg).getArgs()[1].toString());
+						.replace("%sender%", ((ChatType.Bound) msg.getArgs()[0]).name().getString())
+						.replace("%message%", ((Component) msg.getArgs()[1]).getString());
 			}
 			// Regular Chat
 			if (key.equals("chat.type.text")) {
@@ -162,8 +161,8 @@ public class Interweave implements DedicatedServerModInitializer {
 					return;
 				}
 				message = settings.getChatFormat()
-						.replace("%sender%", ((MessageType.Parameters) msg.getArgs()[0]).name().getString())
-						.replace("%message%", ((PlainTextContent) msg.getArgs()[1]).string());
+						.replace("%sender%", ((ChatType.Bound) msg.getArgs()[0]).name().getString())
+						.replace("%message%", ((PlainTextContents) msg.getArgs()[1]).text());
 			}
 			message = findMention(message);
 			try {
@@ -176,27 +175,48 @@ public class Interweave implements DedicatedServerModInitializer {
 	}
 
 	private static String findMention(String message) {
-		ArrayList<String> words = new ArrayList<>();
-		Collections.addAll(words, message.split(" "));
 		StringBuilder builder = new StringBuilder();
-		for (String s : words) {
-			if (!s.contains("@")) {
-				builder.append(s);
-			} else {
-				String string = s.replace("@", "");
-				User user = null;
-				if (mentionables.get(string.toLowerCase()) != null) {
-					user = jda.retrieveUserById(mentionables.get(string.toLowerCase())).complete();
+		int i = 0;
+		while (i < message.length()) {
+			if (message.charAt(i) == '@') {
+				// Longest name wins, so "@Big Steve" beats "@Big"; on a tie a username wins, since those are unique
+				String bestId = null;
+				int bestLength = 0;
+				boolean bestIsUsername = false;
+				for (Map.Entry<String, List<String>> entry : mentionables.entrySet()) {
+					List<String> names = entry.getValue();
+					for (int n = 0; n < names.size(); n++) {
+						String name = names.get(n);
+						boolean isUsername = n == 0;
+						boolean better = name.length() > bestLength
+								|| (name.length() == bestLength && isUsername && !bestIsUsername);
+						if (better && isMentionAt(message, i + 1, name)) {
+							bestId = entry.getKey();
+							bestLength = name.length();
+							bestIsUsername = isUsername;
+						}
+					}
 				}
-				if (user != null) {
-					builder.append(user.getAsMention());
-				} else {
-					builder.append(s);
+				if (bestId != null) {
+					builder.append(UserSnowflake.fromId(bestId).getAsMention());
+					i += 1 + bestLength;
+					continue;
 				}
 			}
-			builder.append(" ");
+			builder.append(message.charAt(i));
+			i++;
 		}
-		return builder.toString().trim();
+		return builder.toString();
+	}
+
+	// The name has to follow the @ (any case) and not run on into more letters or digits,
+	// so "@alice," matches alice but "@alicebob" doesn't
+	private static boolean isMentionAt(String message, int start, String name) {
+		if (name.isEmpty() || !message.regionMatches(true, start, name, 0, name.length())) {
+			return false;
+		}
+		int end = start + name.length();
+		return end == message.length() || !(Character.isLetterOrDigit(message.charAt(end)) || message.charAt(end) == '_');
 	}
 
 	public static void sendStartMessage() {
@@ -234,14 +254,28 @@ public class Interweave implements DedicatedServerModInitializer {
 		return settings;
 	}
 
-	private static HashMap<String, String> buildDiscordMentionables() {
+	private static void loadDiscordMentionables() {
 		Guild g = jda.getTextChannelById(SettingsManager.getInstance().getSettings().getChannelId()).getGuild();
-		HashMap<String, String> mentionables = new HashMap<>();
-		for (net.dv8tion.jda.api.entities.Member member : g.loadMembers().get()) {
-			User u = member.getUser();
-			mentionables.put(u.getName().toLowerCase(), u.getId());
+		for (Member member : g.loadMembers().get()) {
+			updateMentionable(member);
 		}
-		return mentionables;
+	}
+
+	public static void updateMentionable(Member member) {
+		User u = member.getUser();
+		List<String> names = new ArrayList<>();
+		names.add(u.getName());
+		if (u.getGlobalName() != null) {
+			names.add(u.getGlobalName());
+		}
+		if (member.getNickname() != null) {
+			names.add(member.getNickname());
+		}
+		mentionables.put(u.getId(), names);
+	}
+
+	public static void removeMentionable(String userId) {
+		mentionables.remove(userId);
 	}
 
 	public static void setLastMessage(String lastMessage) {
@@ -255,7 +289,7 @@ public class Interweave implements DedicatedServerModInitializer {
 	public static void setPlayers(int current, int max) {
 		ES.execute(() -> {
 			try {
-				jda.getPresence().setActivity(Activity.of(Activity.ActivityType.DEFAULT, current + "/" + max));
+				jda.getPresence().setActivity(Activity.of(Activity.ActivityType.PLAYING, current + "/" + max));
 			} catch (Exception e) {
 				log(Level.ERROR, "Could not set player count!", e);
 			}
